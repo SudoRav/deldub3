@@ -6,6 +6,7 @@ using SixLabors.ImageSharp.Processing;
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -337,8 +338,11 @@ namespace deldub3
             var folder = SelectFolder();
             if (folder == null) return;
 
-            double threshold = Convert.ToDouble(TxtThreshold.Text);
-            if (double.TryParse(TxtThreshold.Text.Replace(',', '.'), out double val)) threshold = val;
+            if (!TryGetThreshold(TxtThreshold.Text, out double threshold))
+            {
+                MessageBox.Show("Введите процент от 0 до 100");
+                return;
+            }
 
             var progress = new Progress<int>(percent => ProgressBarStatus.Value = percent);
 
@@ -348,23 +352,30 @@ namespace deldub3
         }
         #endregion
 
-        #region 5. Удаление дубликатов по схожести и по указанным путям
+        #region 6. Удаление из второй папки дубликатов файлов из первой папки
         private async void Button_Click6(object sender, RoutedEventArgs e)
         {
+            ProgressText.Text = "Выберите папку-источник. Файлы из неё удаляться не будут.";
             var folder1 = SelectFolder();
             if (folder1 == null) return;
 
+            ProgressText.Text = "Выберите папку, из которой нужно удалить найденные дубликаты.";
             var folder2 = SelectFolder();
             if (folder2 == null) return;
 
-            //double threshold = Convert.ToDouble(TxtThresholdToPath.Text);
-            //if (double.TryParse(TxtThreshold.Text.Replace(',', '.'), out double val)) threshold = val;
+            if (!TryGetThreshold(TxtThresholdToPath.Text, out double threshold))
+            {
+                MessageBox.Show("Введите процент от 0 до 100");
+                return;
+            }
 
-            //var progress = new Progress<int>(percent => ProgressBarStatus.Value = percent);
+            ProgressBarStatus.Value = 0;
+            var progress = new Progress<int>(percent => ProgressBarStatus.Value = percent);
 
-            //int deleted = await Task.Run(() => ImageDuplicateRemover.RemoveVisualDuplicates(folder, progress, threshold));
+            int deleted = await Task.Run(() =>
+                ImageDuplicateRemover.RemoveVisualDuplicatesFromSecondFolder(folder1, folder2, progress, threshold));
 
-            //ProgressText.Text = $"Готово. Удалено {deleted} файлов.";
+            ProgressText.Text = $"Готово. Удалено {deleted} файлов из второй папки.";
         }
         #endregion
 
@@ -374,6 +385,12 @@ namespace deldub3
             var dialog = new CommonOpenFileDialog { IsFolderPicker = true };
             if (dialog.ShowDialog() != CommonFileDialogResult.Ok) return null;
             return dialog.FileName;
+        }
+
+        private bool TryGetThreshold(string text, out double threshold)
+        {
+            bool parsed = double.TryParse(text?.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out threshold);
+            return parsed && threshold >= 0 && threshold <= 100;
         }
 
         private string ToCode(Rgba32 c)
@@ -398,6 +415,12 @@ namespace deldub3
             int total = files.Count;
             int processed = 0;
             int deletedCount = 0;
+
+            if (total == 0)
+            {
+                progress.Report(100);
+                return 0;
+            }
 
             var hashes = new ConcurrentDictionary<string, string>();
 
@@ -426,6 +449,57 @@ namespace deldub3
                     else
                     {
                         hashes.TryAdd(hash, file);
+                    }
+                }
+                catch { }
+
+                int p = Interlocked.Increment(ref processed);
+                progress.Report((int)((p / (double)total) * 100));
+            });
+
+            return deletedCount;
+        }
+        public static int RemoveVisualDuplicatesFromSecondFolder(string sourceFolderPath, string targetFolderPath, IProgress<int> progress, double similarityThreshold = 99.5)
+        {
+            var sourceFiles = Directory.GetFiles(sourceFolderPath, "*.*", SearchOption.AllDirectories)
+                                       .Where(f => Extensions.Contains(Path.GetExtension(f).ToLower()))
+                                       .ToList();
+            var targetFiles = Directory.GetFiles(targetFolderPath, "*.*", SearchOption.AllDirectories)
+                                       .Where(f => Extensions.Contains(Path.GetExtension(f).ToLower()))
+                                       .ToList();
+
+            int total = targetFiles.Count;
+            int processed = 0;
+            int deletedCount = 0;
+
+            if (total == 0)
+            {
+                progress.Report(100);
+                return 0;
+            }
+
+            var sourceHashes = new ConcurrentBag<string>();
+
+            Parallel.ForEach(sourceFiles, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount - 1 }, file =>
+            {
+                try
+                {
+                    sourceHashes.Add(GetPerceptualHash(file));
+                }
+                catch { }
+            });
+
+            Parallel.ForEach(targetFiles, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount - 1 }, file =>
+            {
+                try
+                {
+                    string hash = GetPerceptualHash(file);
+                    bool isDuplicate = sourceHashes.Any(existing => CompareHashes(existing, hash) >= similarityThreshold);
+
+                    if (isDuplicate)
+                    {
+                        File.Delete(file);
+                        Interlocked.Increment(ref deletedCount);
                     }
                 }
                 catch { }
