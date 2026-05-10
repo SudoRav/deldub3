@@ -50,7 +50,7 @@
             <StackPanel Orientation="Horizontal">
                 <Button x:Name="BtnSelectFolderToPath" 
                         Content="Удалить дубликаты из выбранной папки в папке"
-                        Click="Button_Click5"
+                        Click="Button_Click6"
                         Width="300" Height="25"
                         Margin="10,5,10,0" />
 
