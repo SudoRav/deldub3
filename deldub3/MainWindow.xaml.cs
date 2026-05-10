@@ -363,6 +363,12 @@ namespace deldub3
             var folder2 = SelectFolder();
             if (folder2 == null) return;
 
+            if (AreFoldersSameOrNested(folder1, folder2))
+            {
+                MessageBox.Show("Выберите две разные непересекающиеся папки, чтобы файлы из первой папки не могли быть удалены.");
+                return;
+            }
+
             if (!TryGetThreshold(TxtThresholdToPath.Text, out double threshold))
             {
                 MessageBox.Show("Введите процент от 0 до 100");
@@ -391,6 +397,22 @@ namespace deldub3
         {
             bool parsed = double.TryParse(text?.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out threshold);
             return parsed && threshold >= 0 && threshold <= 100;
+        }
+
+        private bool AreFoldersSameOrNested(string folder1, string folder2)
+        {
+            string fullFolder1 = GetFullDirectoryPath(folder1);
+            string fullFolder2 = GetFullDirectoryPath(folder2);
+
+            return fullFolder1.Equals(fullFolder2, StringComparison.OrdinalIgnoreCase) ||
+                   fullFolder1.StartsWith(fullFolder2, StringComparison.OrdinalIgnoreCase) ||
+                   fullFolder2.StartsWith(fullFolder1, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string GetFullDirectoryPath(string folder)
+        {
+            string fullPath = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return fullPath + Path.DirectorySeparatorChar;
         }
 
         private string ToCode(Rgba32 c)
@@ -461,54 +483,73 @@ namespace deldub3
         }
         public static int RemoveVisualDuplicatesFromSecondFolder(string sourceFolderPath, string targetFolderPath, IProgress<int> progress, double similarityThreshold = 99.5)
         {
+            string sourceRoot = GetFullDirectoryPath(sourceFolderPath);
             var sourceFiles = Directory.GetFiles(sourceFolderPath, "*.*", SearchOption.AllDirectories)
                                        .Where(f => Extensions.Contains(Path.GetExtension(f).ToLower()))
                                        .ToList();
-            var targetFiles = Directory.GetFiles(targetFolderPath, "*.*", SearchOption.AllDirectories)
-                                       .Where(f => Extensions.Contains(Path.GetExtension(f).ToLower()))
-                                       .ToList();
+            var targetHashes = Directory.GetFiles(targetFolderPath, "*.*", SearchOption.AllDirectories)
+                                        .Where(f => Extensions.Contains(Path.GetExtension(f).ToLower()))
+                                        .Where(f => !IsPathInDirectory(f, sourceRoot))
+                                        .Select(file =>
+                                        {
+                                            try
+                                            {
+                                                return new { Path = file, Hash = GetPerceptualHash(file) };
+                                            }
+                                            catch
+                                            {
+                                                return null;
+                                            }
+                                        })
+                                        .Where(item => item != null)
+                                        .ToList();
 
-            int total = targetFiles.Count;
+            int total = sourceFiles.Count;
             int processed = 0;
             int deletedCount = 0;
 
-            if (total == 0)
+            if (total == 0 || targetHashes.Count == 0)
             {
                 progress.Report(100);
                 return 0;
             }
 
-            var sourceHashes = new ConcurrentBag<string>();
-
-            Parallel.ForEach(sourceFiles, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount - 1 }, file =>
+            foreach (var sourceFile in sourceFiles)
             {
                 try
                 {
-                    sourceHashes.Add(GetPerceptualHash(file));
-                }
-                catch { }
-            });
+                    string sourceHash = GetPerceptualHash(sourceFile);
 
-            Parallel.ForEach(targetFiles, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount - 1 }, file =>
-            {
-                try
-                {
-                    string hash = GetPerceptualHash(file);
-                    bool isDuplicate = sourceHashes.Any(existing => CompareHashes(existing, hash) >= similarityThreshold);
-
-                    if (isDuplicate)
+                    for (int i = targetHashes.Count - 1; i >= 0; i--)
                     {
-                        File.Delete(file);
-                        Interlocked.Increment(ref deletedCount);
+                        var target = targetHashes[i];
+                        if (CompareHashes(sourceHash, target.Hash) < similarityThreshold) continue;
+                        if (IsPathInDirectory(target.Path, sourceRoot)) continue;
+
+                        File.Delete(target.Path);
+                        targetHashes.RemoveAt(i);
+                        deletedCount++;
                     }
                 }
                 catch { }
 
-                int p = Interlocked.Increment(ref processed);
-                progress.Report((int)((p / (double)total) * 100));
-            });
+                processed++;
+                progress.Report((int)((processed / (double)total) * 100));
+            }
 
             return deletedCount;
+        }
+
+        private static bool IsPathInDirectory(string path, string directoryRoot)
+        {
+            string fullPath = Path.GetFullPath(path);
+            return fullPath.StartsWith(directoryRoot, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetFullDirectoryPath(string folder)
+        {
+            string fullPath = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return fullPath + Path.DirectorySeparatorChar;
         }
 
         private static string GetPerceptualHash(string path)
