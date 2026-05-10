@@ -404,7 +404,7 @@ namespace deldub3
 
     public static class ImageDuplicateRemover
     {
-        private static readonly string[] Extensions = { ".png", ".jpg", ".jpeg" };
+        private static readonly string[] Extensions = { ".png", ".jpg", ".jpeg", ".webp" };
 
         public static int RemoveVisualDuplicates(string folderPath, IProgress<int> progress, double similarityThreshold = 99.5)
         {
